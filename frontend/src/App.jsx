@@ -970,6 +970,7 @@ function InterviewPage() {
   const [cameraEnabled, setCameraEnabled] = useState(false);
   const [cameraLoading, setCameraLoading] = useState(false);
   const [cameraError, setCameraError] = useState("");
+  const [cameraTrackMuted, setCameraTrackMuted] = useState(false);
   const [interviewStarted, setInterviewStarted] = useState(false);
   const [greetingComplete, setGreetingComplete] = useState(false);
   const [questionSpokenId, setQuestionSpokenId] = useState(null);
@@ -989,6 +990,8 @@ function InterviewPage() {
   const recorderRef = useRef(null);
   const streamRef = useRef(null);
   const cameraStreamRef = useRef(null);
+  const cameraStartPromiseRef = useRef(null);
+  const cameraRequestIdRef = useRef(0);
   const cameraVideoRef = useRef(null);
   const mountedRef = useRef(true);
   const clipAudioRef = useRef(null);
@@ -1039,14 +1042,16 @@ function InterviewPage() {
 
   useEffect(() => {
     const video = cameraVideoRef.current;
-    if (!cameraEnabled || !video || !cameraStreamRef.current) return undefined;
-    video.srcObject = cameraStreamRef.current;
+    const stream = cameraStreamRef.current;
+    if (!cameraEnabled || !video || !stream) return undefined;
+    video.srcObject = stream;
     video.play().catch(() => {
-      stopCamera();
-      setCameraError("Camera preview could not start playing. Try enabling the camera again.");
+      if (mountedRef.current && cameraStreamRef.current === stream) {
+        setCameraError("Camera preview could not start playing. Retry the preview or reconnect the camera.");
+      }
     });
     return () => {
-      if (video.srcObject === cameraStreamRef.current) video.srcObject = null;
+      if (video.srcObject === stream) video.srcObject = null;
     };
   }, [cameraEnabled]);
 
@@ -1066,13 +1071,19 @@ function InterviewPage() {
       mountedRef.current = false;
       cancelSpeech();
       clipAudioRef.current?.pause();
-      cameraStreamRef.current?.getVideoTracks().forEach((track) => { track.onended = null; track.stop(); });
+      cameraRequestIdRef.current += 1;
+      cameraStreamRef.current?.getVideoTracks().forEach((track) => {
+        track.onended = null;
+        track.onmute = null;
+        track.onunmute = null;
+        track.stop();
+      });
       cameraStreamRef.current = null;
       if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
       if (recorderRef.current?.state === "recording" || recorderRef.current?.state === "paused") recorderRef.current.stop();
       streamRef.current?.getTracks().forEach((track) => track.stop());
     };
-  }, []);
+  }, [interviewId]);
 
   useEffect(() => () => {
     if (clipUrl) URL.revokeObjectURL(clipUrl);
@@ -1083,7 +1094,7 @@ function InterviewPage() {
     setWorking(true); setError("");
     let permissionStream;
     try {
-      if (!cameraEnabled && !(await enableCamera())) return;
+      if (!(await enableCamera())) return;
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser does not support microphone recording. Try a current version of Chrome, Edge, or Firefox.");
       permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true });
       permissionStream.getTracks().forEach((track) => track.stop());
@@ -1096,56 +1107,118 @@ function InterviewPage() {
     } finally { setWorking(false); }
   }
 
-  async function enableCamera() {
-    if (cameraEnabled && cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live")) return true;
-    if (cameraLoading) return false;
+  function enableCamera() {
+    const activeTracks = cameraStreamRef.current?.getVideoTracks() || [];
+    if (activeTracks.some((track) => track.readyState === "live" && !track.muted)) {
+      return Promise.resolve(true);
+    }
+    if (cameraStartPromiseRef.current) return cameraStartPromiseRef.current;
+    if (cameraStreamRef.current) stopCamera();
     setCameraError("");
     if (!navigator.mediaDevices?.getUserMedia) {
       setCameraError("This browser does not support camera access. Use a current browser with camera permission to start the interview.");
+      return Promise.resolve(false);
+    }
+    const requestId = ++cameraRequestIdRef.current;
+    setCameraLoading(true);
+    let request;
+    request = (async () => {
+      try {
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user" },
+            audio: false,
+          });
+        } catch (err) {
+          if (err.name !== "OverconstrainedError" || (err.constraint && err.constraint !== "facingMode")) {
+            throw err;
+          }
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+        if (
+          !mountedRef.current ||
+          requestId !== cameraRequestIdRef.current ||
+          ["PROCESSING", "COMPLETED", "CANCELLED"].includes(sessionStatusRef.current)
+        ) {
+          stream.getVideoTracks().forEach((track) => track.stop());
+          return false;
+        }
+        cameraStreamRef.current = stream;
+        setCameraTrackMuted(false);
+        stream.getVideoTracks().forEach((track) => {
+          track.onended = () => {
+            if (cameraStreamRef.current === stream) {
+              stopCamera();
+              setCameraError("The camera disconnected. Reconnect it and retry the preview.");
+            }
+          };
+          track.onmute = () => {
+            if (cameraStreamRef.current === stream) setCameraTrackMuted(true);
+          };
+          track.onunmute = () => {
+            if (cameraStreamRef.current === stream) setCameraTrackMuted(false);
+          };
+        });
+        setCameraEnabled(true);
+        return true;
+      } catch (err) {
+        const messages = {
+          NotAllowedError: "Camera permission was blocked. Allow camera access in your browser settings, then try again.",
+          SecurityError: "Camera access is blocked for this page. Use a secure connection and allow camera access.",
+          NotFoundError: "No camera is available to this browser. Check device access and reconnect the camera.",
+          DevicesNotFoundError: "No camera is available to this browser. Check device access and reconnect the camera.",
+          NotReadableError: "The camera could not start. It may be in use by another application.",
+          TrackStartError: "The camera could not start. It may be in use by another application.",
+          OverconstrainedError: "No available camera can satisfy the preview settings. Reconnect it or try another camera.",
+          ConstraintNotSatisfiedError: "No available camera can satisfy the preview settings. Reconnect it or try another camera.",
+          AbortError: "The camera start was interrupted. Please try again.",
+        };
+        if (mountedRef.current && requestId === cameraRequestIdRef.current) {
+          setCameraError(messages[err.name] || "The camera preview could not start. Check your device and try again.");
+        }
+        return false;
+      } finally {
+        if (cameraStartPromiseRef.current === request) cameraStartPromiseRef.current = null;
+        if (mountedRef.current && requestId === cameraRequestIdRef.current) setCameraLoading(false);
+      }
+    })();
+    cameraStartPromiseRef.current = request;
+    return request;
+  }
+
+  async function retryCameraPreview() {
+    const stream = cameraStreamRef.current;
+    const video = cameraVideoRef.current;
+    if (!stream || !video || !stream.getVideoTracks().some((track) => track.readyState === "live" && !track.muted)) {
+      stopCamera();
+      setCameraError("The camera preview ended. Reconnect the camera to continue.");
       return false;
     }
-    setCameraLoading(true);
+    video.srcObject = stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
-      if (!mountedRef.current || sessionStatusRef.current === "COMPLETED" || sessionStatusRef.current === "CANCELLED") {
-        stream.getVideoTracks().forEach((track) => track.stop());
-        return false;
-      }
-      cameraStreamRef.current = stream;
-      stream.getVideoTracks().forEach((track) => {
-        track.onended = () => {
-          if (cameraStreamRef.current === stream) {
-            stopCamera();
-            setCameraError("The camera disconnected. Reconnect it and retry the preview.");
-          }
-        };
-      });
-      setCameraEnabled(true);
+      await video.play();
+      setCameraError("");
       return true;
-    } catch (err) {
-      const messages = {
-        NotAllowedError: "Camera permission was blocked. Allow camera access in your browser settings, then try again.",
-        SecurityError: "Camera access is blocked for this page. Use a secure connection and allow camera access.",
-        NotFoundError: "No camera was found. Connect a camera before starting the interview.",
-        DevicesNotFoundError: "No camera was found. Connect a camera before starting the interview.",
-        NotReadableError: "The camera could not start. It may be in use by another application.",
-        TrackStartError: "The camera could not start. It may be in use by another application.",
-        OverconstrainedError: "This camera could not use the requested preview settings. Reconnect it or try another camera.",
-        AbortError: "The camera start was interrupted. Please try again.",
-      };
-      setCameraError(messages[err.name] || "The camera preview could not start. Check your device and try again.");
+    } catch {
+      setCameraError("Camera preview could not start playing. Retry the preview or reconnect the camera.");
       return false;
-    } finally {
-      if (mountedRef.current) setCameraLoading(false);
     }
   }
 
   function stopCamera() {
-    cameraStreamRef.current?.getVideoTracks().forEach((track) => { track.onended = null; track.stop(); });
+    cameraRequestIdRef.current += 1;
+    cameraStreamRef.current?.getVideoTracks().forEach((track) => {
+      track.onended = null;
+      track.onmute = null;
+      track.onunmute = null;
+      track.stop();
+    });
     cameraStreamRef.current = null;
     if (cameraVideoRef.current) cameraVideoRef.current.srcObject = null;
     setCameraEnabled(false);
     setCameraLoading(false);
+    setCameraTrackMuted(false);
   }
 
   function playQuestion() {
@@ -1247,7 +1320,7 @@ function InterviewPage() {
 
   async function beginRecording() {
     if (recording || recordingStarting || working || interviewPaused) return;
-    if (!cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live")) {
+    if (!cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live" && !track.muted)) {
       setCameraError("The camera is required. Reconnect it before recording your answer.");
       return;
     }
@@ -1272,6 +1345,12 @@ function InterviewPage() {
       const choices = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
       const supported = choices.find((type) => window.MediaRecorder?.isTypeSupported?.(type));
       const recorder = supported ? new MediaRecorder(stream, { mimeType: supported }) : new MediaRecorder(stream);
+      if (!cameraStreamRef.current?.getVideoTracks().some((track) => track.readyState === "live" && !track.muted)) {
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        setCameraError("The camera is required. Reconnect it before recording your answer.");
+        return;
+      }
       const chunks = [];
       recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
       recorder.onstop = () => {
@@ -1526,13 +1605,14 @@ function InterviewPage() {
           </section>
 
           <aside className={`student-camera-card${cameraEnabled ? " is-on" : ""}`} aria-label="Required student camera preview">
-            <div className="student-camera-heading"><div><span className="rail-kicker">REQUIRED · LOCAL PREVIEW</span><h2>Your camera</h2></div><span className={`camera-state${cameraEnabled ? " is-on" : ""}`}>{cameraLoading ? "Starting" : cameraEnabled ? "Camera is on" : "Camera required"}</span></div>
+            <div className="student-camera-heading"><div><span className="rail-kicker">REQUIRED · LOCAL PREVIEW</span><h2>Your camera</h2></div><span className={`camera-state${cameraEnabled && !cameraTrackMuted ? " is-on" : ""}`}>{cameraLoading ? "Starting" : cameraTrackMuted ? "Temporarily paused" : cameraEnabled ? "Camera is on" : "Camera required"}</span></div>
             <div className={`student-camera-frame${cameraEnabled ? " has-video" : ""}`}>
               {cameraEnabled ? <video ref={cameraVideoRef} autoPlay muted playsInline aria-label="Your live camera preview. Video stays on this device." /> : cameraLoading ? <div className="camera-placeholder" role="status"><span className="camera-spinner" /><strong>Starting camera…</strong></div> : <div className="camera-placeholder"><VideoOff size={27} aria-hidden="true" /><strong>Camera required to start</strong><span>Allow camera access to continue.</span></div>}
             </div>
             {cameraError && <p className="camera-error" role="alert">{cameraError}</p>}
+            {cameraTrackMuted && <p className="camera-error" role="status">The camera feed is temporarily paused. Wait for it to resume or reconnect the camera.</p>}
             <p className="camera-privacy">The live preview stays on this device. Camera video is not recorded, uploaded, or analyzed.</p>
-            {!cameraEnabled && <button className="button camera-toggle-on" type="button" onClick={enableCamera} disabled={!session || cameraLoading || isComplete || session?.status === "CANCELLED" || isScheduled && !consent}><Video size={15} />{cameraLoading ? "Starting camera…" : cameraError ? "Reconnect camera" : "Start camera"}</button>}
+            {(!cameraEnabled || cameraTrackMuted || cameraError) && <button className="button camera-toggle-on" type="button" onClick={cameraEnabled && cameraError && !cameraTrackMuted ? retryCameraPreview : enableCamera} disabled={!session || cameraLoading || isComplete || session?.status === "CANCELLED" || isScheduled && !consent}><Video size={15} />{cameraLoading ? "Starting camera…" : cameraError ? cameraEnabled ? "Retry preview" : "Reconnect camera" : cameraTrackMuted ? "Reconnect camera" : "Start camera"}</button>}
           </aside>
         </section>
       </main>
