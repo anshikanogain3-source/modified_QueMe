@@ -359,6 +359,8 @@ def excel_report(interview_id):
             "teacher_remark": q.teacher_remark or "",
             "needs_review": bool(q.needs_review),
             "feedback": (q.evaluation_json or {}).get("feedback", "") if isinstance(q.evaluation_json, dict) else "",
+            "provider_results": json.dumps((q.evaluation_json or {}).get("provider_results", {}), ensure_ascii=False),
+            "review_reason": (q.evaluation_json or {}).get("review_reason", ""),
             "rubric_breakdown": json.dumps((q.evaluation_json or {}).get("criteria_scores", {}), ensure_ascii=False)
             if isinstance(q.evaluation_json, dict) else "",
             "criterion_feedback_and_evidence": json.dumps((q.evaluation_json or {}).get("criterion_details", {}), ensure_ascii=False)

@@ -118,7 +118,11 @@ def _restore_interrupted_job(job):
         isinstance(question.evaluation_json, dict)
         and question.evaluation_json.get("needs_teacher_review")
     )
-    if question.content_score is not None and not needs_review:
+    if isinstance(question.evaluation_json, dict) and (
+        question.evaluation_json.get("evaluation_in_progress") or question.evaluation_json.get("retryable")
+    ):
+        job.status = "QUEUED"
+    elif question.content_score is not None and not needs_review:
         job.status = "COMPLETED"
         job.outcome = "EVALUATED"
         job.finished_at = job.finished_at or datetime.utcnow()
@@ -201,10 +205,11 @@ def latest_completed_evaluation(interview, before_order=None):
 def _mark_teacher_review(job, reason_code, reason_message):
     question = job.question
     question.needs_review = True
-    evaluation = question.evaluation_json if isinstance(question.evaluation_json, dict) else {}
+    evaluation = dict(question.evaluation_json) if isinstance(question.evaluation_json, dict) else {}
     evaluation.update({
         "needs_teacher_review": True,
         "error": reason_message,
+        "retryable": False,
     })
     if question.content_score is None:
         evaluation["evaluation_status"] = "UNAVAILABLE"
@@ -366,7 +371,9 @@ def process_job(job_id):
         evaluation_elapsed = time.monotonic() - evaluation_started
         score = job.question.content_score
         evaluation_error = str(evaluation.get("error") or "")
-        if evaluation_error.startswith("Local Ollama returned invalid structured content"):
+        if evaluation.get("provider_results") and evaluation.get("retryable"):
+            _retry_or_review(job, "provider_transient_failure", "A provider is temporarily unavailable; completed assessments are retained.")
+        elif evaluation_error.startswith("Local Ollama returned invalid structured content"):
             diagnostic = evaluation_error[:300]
             _retry_or_review(
                 job,
@@ -391,11 +398,11 @@ def process_job(job_id):
             job.last_error_code = None
             job.last_error_message = None
         else:
-            reason_code = "evidence_unavailable" if evaluation.get("review_reason") == "evidence_unavailable" else "evaluation_unavailable"
+            reason_code = evaluation.get("review_reason") or "evaluation_unavailable"
             safe_message = (
                 "Evaluation evidence could not be verified against the saved transcript."
                 if reason_code == "evidence_unavailable"
-                else "Automatic evaluation did not produce a complete score."
+                else f"Teacher review required: {reason_code}."
             )
             _mark_teacher_review(job, reason_code, safe_message)
         db.session.commit()

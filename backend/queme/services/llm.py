@@ -271,7 +271,7 @@ def _parse_json(text: str):
 
 def _generate_json(
     prompt, *, num_predict=700, validator=None, operation="generation",
-    correlation_id=None, soft_budget_seconds=None, format_schema=None, repair_instruction=None,
+    correlation_id=None, soft_budget_seconds=None, format_schema=None, repair_instruction=None, generator=None,
 ):
     """Retry a malformed/invalid structured response once, with a repair instruction."""
     started = time.monotonic()
@@ -289,7 +289,7 @@ def _generate_json(
             + "Return only valid JSON matching the requested structure.\n"
             + prompt
         )
-        content = _generate(
+        content = (generator or _generate)(
             request_prompt,
             num_predict=num_predict,
             operation=operation,
@@ -355,7 +355,7 @@ def _evaluation_validation_error(value, criterion_names):
     missing = required - value.keys()
     if missing:
         return "missing_field:" + sorted(missing)[0]
-    allowed = required | allowed_score_fields
+    allowed = required | allowed_score_fields | {"accuracy_category", "credited_concepts"}
     if set(value) - allowed:
         return "unexpected_field:" + sorted(set(value) - allowed)[0]
     scores = value.get(score_field)
@@ -520,14 +520,15 @@ def generate_questions(topic: str, question_type: str, difficulty: str, count: i
         return {"available": False, "questions": [], "error": _error_message(exc)}
 
 
-def evaluate_answer(payload: dict, *, correlation_id=None):
+def _evaluate_provider(payload: dict, *, correlation_id=None, provider="ollama"):
+    from .assessment import assessment_schema, assessment_error, normalize_assessment, openai_generate, groq_generate, provider_model, ProviderError, RULES
     fallback = {
         "criteria_scores": {}, "strengths": [],
         "weaknesses": ["Automatic evaluation is unavailable."],
-        "feedback": "Teacher review is recommended because local AI evaluation is unavailable.",
+        "feedback": "Teacher review is recommended because automated evaluation is unavailable.",
         "needs_teacher_review": True, "content_score": None,
     }
-    if not _configured():
+    if provider == "ollama" and not _configured():
         fallback["error"] = "Local Ollama is not configured."
         return fallback
     rubric = payload.get("rubric") or {}
@@ -562,14 +563,13 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
             "criteria_weights": criterion_weights,
             "content_score": 0.0, "strengths": [], "weaknesses": ["No answer was provided."],
             "missing_concepts": [], "correct_explanation": "Review the question's expected answer and try again.",
-            "technical_accuracy": "Not answered", "feedback": "No answer was provided. Review the question and try again.", "needs_teacher_review": False,
+            "accuracy_category": "not_answered", "credited_concepts": [], "technical_accuracy": "Not answered", "feedback": "No answer was provided. Review the question and try again.", "needs_teacher_review": False,
         }
 
     # Rubric is supplied once. Delivery metrics remain in persisted analytics and
     # score calculations; they are not repeated in the content-evaluation prompt.
     evaluation_input = {
-        key: value for key, value in payload.items()
-        if key not in ("rubric", "audio_metrics")
+        key: payload.get(key) for key in ("question", "question_type", "expected_key_points", "reference_answer", "transcript")
     }
     example_evidence = transcript[:min(120, len(transcript))]
     if not criterion_names:
@@ -580,7 +580,7 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
             "correct_explanation gives the correct answer. overall_evidence must be a verbatim excerpt from the supplied transcript. "
             "criteria_scores and criterion_details must both be empty objects. Never put overall or other evaluation fields "
             "inside either criterion map. Do not add criteria or invent evidence. Keep strengths and weaknesses to at most two strings.\n"
-            "Canonical JSON example (replace the example values, keep this exact structure):\n"
+            "JSON example (also include accuracy_category and credited_concepts as specified above):\n"
             '{"criteria_scores":{},"criterion_details":{},"overall_score":7,"overall_explanation":"The answer is mostly accurate.",'
             '"overall_evidence":"A verbatim transcript excerpt.","technical_accuracy":"Mostly accurate.","missing_concepts":[],'
             '"correct_explanation":"A concise correct explanation.","strengths":[],"weaknesses":[],"feedback":"Concise feedback.",'
@@ -618,19 +618,20 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
             "Each criteria_scores value must be a number from 0 to 10, never an object. "
             "criterion_details must be a separate top-level object, not nested inside criteria_scores. "
             "For every rubric criterion, include applicable (boolean), explanation (non-empty string), and evidence "
-            "(an exact transcript excerpt or null) in criterion_details. Follow this canonical JSON structure; use every "
+            "(an exact transcript excerpt or null) in criterion_details. Add accuracy_category and credited_concepts as specified above. Follow this JSON structure; use every "
             "criterion name from the rubric in both criterion maps and replace the example text with your evaluation:\n"
             f"{json.dumps(example, ensure_ascii=False, separators=(',', ':'))}\n"
             f"Rubric: {json.dumps(criteria, ensure_ascii=False, separators=(',', ':'))}\n"
             f"Evaluation input: {json.dumps(evaluation_input, ensure_ascii=False, separators=(',', ':'))}"
         )
+    prompt = RULES + "\n" + prompt
     evaluation_started = time.monotonic()
     token_budget = _evaluation_token_budget(len(criterion_names))
     soft_budget = int(current_app.config.get("OLLAMA_EVALUATION_BUDGET_SECONDS", 600))
     logger.info(
         "Answer evaluation started correlation_id=%s model=%s criteria=%d output_token_budget=%d soft_budget_s=%d",
         correlation_id or "-",
-        current_app.config.get("OLLAMA_MODEL") or DEFAULT_OLLAMA_MODEL,
+        provider_model(provider),
         len(criterion_names),
         token_budget,
         soft_budget,
@@ -639,11 +640,12 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
         data = _generate_json(
             prompt,
             num_predict=token_budget,
-            validator=lambda value: _evaluation_validation_error(value, criterion_names) or True,
+            validator=lambda value: (_evaluation_validation_error(value, criterion_names) or assessment_error(value, criterion_names, transcript) or True),
+            generator={"openai": openai_generate, "groq": groq_generate}.get(provider),
             operation="answer_evaluation",
             correlation_id=correlation_id,
             soft_budget_seconds=soft_budget,
-            format_schema=_evaluation_json_schema(criterion_names),
+            format_schema=assessment_schema(_evaluation_json_schema(criterion_names)),
             repair_instruction=(
                 "The previous output had evaluation fields nested inside criteria_scores/criterion_details. "
                 "For this no-rubric response, both maps must be empty; place overall_score, overall_explanation, "
@@ -666,7 +668,7 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
                 index = transcript.casefold().find(evidence.strip().casefold())
                 if index >= 0:
                     validated_evidence = transcript[index:index + len(evidence.strip())]
-            if applicable and validated_evidence is None:
+            if applicable and scores.get(name, 0) > 0 and validated_evidence is None:
                 evidence_unavailable = True
             clean_details[name] = {"applicable": applicable, "explanation": explanation.strip(), "evidence": validated_evidence}
             if applicable:
@@ -679,7 +681,7 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
         applicable_count = sum(item["applicable"] for item in clean_details.values())
         if not criterion_names:
             evidence = data["overall_evidence"]
-            if evidence is None or not evidence.strip() or transcript.casefold().find(evidence.strip().casefold()) < 0:
+            if data["overall_score"] > 0 and (evidence is None or not evidence.strip() or transcript.casefold().find(evidence.strip().casefold()) < 0):
                 evidence_unavailable = True
             clean_details = {}
             clean_scores = {}
@@ -712,7 +714,7 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
             int((time.monotonic() - evaluation_started) * 1000),
             "scored" if content_score is not None else "unavailable",
         )
-        return result
+        return normalize_assessment(result)
     except Exception as exc:
         logger.warning(
             "AI answer evaluation failed correlation_id=%s duration_ms=%d error_type=%s",
@@ -720,8 +722,21 @@ def evaluate_answer(payload: dict, *, correlation_id=None):
             int((time.monotonic() - evaluation_started) * 1000),
             type(exc).__name__,
         )
-        fallback["error"] = _error_message(exc)
+        if isinstance(exc, ProviderError):
+            fallback.update(error=exc.code, review_reason=exc.code, retryable=exc.retryable)
+        else:
+            fallback["error"] = _error_message(exc) if provider == "ollama" else f"{provider.title()} evaluation unavailable."
+            if isinstance(exc, ValueError):
+                fallback["review_reason"] = "contradictory_assessment" if str(exc).endswith("diagnostic=contradictory_assessment") else "invalid_assessment"
+            fallback["retryable"] = not isinstance(exc, ValueError)
         return fallback
+
+
+def evaluate_answer(payload: dict, *, correlation_id=None, previous=None, checkpoint=None):
+    from .assessment import sequential_evaluation, SEQUENTIAL_MODES
+    if current_app.config.get("EVALUATION_MODE", "ollama") in SEQUENTIAL_MODES:
+        return sequential_evaluation(payload, _evaluate_provider, correlation_id, previous, checkpoint)
+    return _evaluate_provider(payload, correlation_id=correlation_id)
 
 
 def generate_followup(question_text: str, transcript: str, topic_hint: str = ""):

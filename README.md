@@ -277,3 +277,88 @@ All authoring routes require an active teacher bearer token.
 - A teacher can cancel a scheduled assignment with `POST /api/interviews/<id>/cancel`. Interviews already in progress or completed cannot be cancelled. Completed sessions link to the existing authorized report/review and PDF/Excel export routes.
 
 Questions, rubrics, and templates already used in interviews are protected from edits/deletion that could change historical records. Deactivate an old question instead of deleting it.
+
+## Optional sequential answer evaluation
+
+The default `EVALUATION_MODE=ollama` keeps evaluation local. Set
+`EVALUATION_MODE=ollama_openai_sequential` to evaluate answers with Ollama first,
+then independently with OpenAI. Configure backend `OPENAI_API_KEY`,
+`OPENAI_EVALUATION_MODEL` (default `gpt-5.4-mini`), and `OPENAI_EVALUATION_TIMEOUT`
+(default 120 seconds). Existing `OLLAMA_*` settings still apply. Restart API and worker
+processes after configuration changes. This mode sends question, transcript, rubric and
+reference guidance as text to OpenAI using Responses Structured Outputs with `store=False`;
+recordings and delivery metrics are not sent. No Gemini provider is used.
+
+From the repository root install dependencies with:
+`backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt`.
+
+Both providers must pass the same concept/evidence validation. Agreement means the same
+accuracy category and a score difference strictly below 2 points; the Ollama score is then
+used provisionally, without averaging. Disagreement, uncertainty, or an unavailable provider
+requires teacher review, with no aggregate content/combined score. Individual valid scores
+remain visible for comparison. Teacher overrides retain precedence. SDK retries are disabled;
+the durable worker retries transient failures only, preserving checkpointed provider outcomes.
+Invalid structured assessments get at most one repair attempt. Existing saved reports are
+not re-evaluated or rewritten. Concept relevance still requires model judgment and teacher
+review; exact transcript matches alone do not prove understanding.
+
+### Ollama then Groq
+
+The opt-in `ollama_groq_sequential` mode uses the same validator, checkpoint storage,
+and agreement policy described above. It makes calls only to local Ollama and Groq's
+chat completions endpoint; it has no Gemini, OpenAI API, or paid-provider fallback.
+The existing `ollama_openai_sequential` mode remains available separately.
+
+Set these backend environment values (root `.env` takes precedence over `backend/.env`):
+
+```dotenv
+EVALUATION_MODE=ollama_groq_sequential
+OLLAMA_MODEL=qwen3:1.7b
+GROQ_API_KEY=your-groq-key
+GROQ_EVALUATION_MODEL=openai/gpt-oss-20b
+GROQ_EVALUATION_TIMEOUT=120
+```
+
+Keep the key private. No OpenAI key is needed for this mode. The default GPT-OSS model
+uses strict JSON-schema output. Other documented strict-capable Groq models also use
+strict output; the safeguard model uses best-effort schema output, and other model
+names use JSON-object output followed by the same backend validation. See
+[Groq Structured Outputs](https://console.groq.com/docs/structured-outputs).
+No additional dependency is needed for Groq: its adapter uses Python's standard HTTP
+library, with retries owned by the existing worker and structured-repair loop.
+
+Each finished provider step is committed to the answer's `evaluation_json.provider_results`
+under `ollama` or `groq`, including provider/model/status, validated assessment, or a sanitized
+unavailability reason. Completed results survive worker retry/restart for the same answer.
+Reports, student feedback, PDF and Excel expose the saved outcomes without re-evaluating
+historical interviews. Daily token/request quota exhaustion goes directly to teacher review;
+transient rate limits and connection errors use bounded worker retries. No migration is required.
+
+From the repository root, install the existing dependencies if needed:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+```
+
+After changing configuration, press **Ctrl+C** in the existing worker and API terminals.
+Start each again in a separate terminal; do not run a second worker alongside the first:
+
+```powershell
+Set-Location C:\Users\2525201\Desktop\QueMe\backend
+.\.venv\Scripts\python.exe -m flask --app run.py process-answer-jobs
+```
+
+```powershell
+Set-Location C:\Users\2525201\Desktop\QueMe\backend
+.\.venv\Scripts\python.exe -m flask --app run.py --debug run
+```
+
+For the frontend, if it is not already running:
+
+```powershell
+Set-Location C:\Users\2525201\Desktop\QueMe\frontend
+npm run dev
+```
+
+These startup commands process real queued answers. Automated verification uses mocked
+providers and isolated databases/storage; a live smoke test is a separate step.

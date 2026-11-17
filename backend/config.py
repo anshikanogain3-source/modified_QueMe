@@ -45,6 +45,14 @@ class Config:
     LOG_MAX_BYTES = _positive_int_env("LOG_MAX_BYTES", str(10 * 1024 * 1024))
     LOG_BACKUP_COUNT = _positive_int_env("LOG_BACKUP_COUNT", "5")
 
+    EVALUATION_MODE = os.getenv("EVALUATION_MODE", "ollama").strip()
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+    GROQ_EVALUATION_MODEL = os.getenv("GROQ_EVALUATION_MODEL", "openai/gpt-oss-20b").strip()
+    GROQ_EVALUATION_TIMEOUT = _positive_int_env("GROQ_EVALUATION_TIMEOUT", "120")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    OPENAI_EVALUATION_MODEL = os.getenv("OPENAI_EVALUATION_MODEL", "gpt-5.4-mini").strip()
+    OPENAI_EVALUATION_TIMEOUT = _positive_int_env("OPENAI_EVALUATION_TIMEOUT", "120")
+
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3:1.7b").strip()
     OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "30m").strip()
@@ -95,6 +103,8 @@ class Config:
 
 def validate_config(app):
     """Fail fast on deployment-critical configuration mistakes."""
+    if app.config.get("EVALUATION_MODE", "ollama") not in {"ollama", "ollama_openai_sequential", "ollama_groq_sequential"}:
+        raise RuntimeError("EVALUATION_MODE must be ollama, ollama_openai_sequential, or ollama_groq_sequential.")
     secret = app.config.get("SECRET_KEY")
     if not isinstance(secret, str) or len(secret) < 32 or "replace-with" in secret.lower():
         raise RuntimeError("Set SECRET_KEY to a randomly generated value of at least 32 characters in .env.")

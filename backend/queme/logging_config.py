@@ -127,6 +127,10 @@ def configure_logging(app):
             datefmt="%Y-%m-%dT%H:%M:%S%z",
         )
 
+        # SDK debug logs can contain request bodies; never emit student scoring text.
+        for name in ("openai", "httpx", "httpcore"):
+            logging.getLogger(name).setLevel(logging.WARNING)
+
         root = logging.getLogger()
         _remove_managed_handlers(root)
         root.setLevel(level)

@@ -1,3 +1,4 @@
+from assessment_fixtures import grounded_json
 import io
 import json
 import tempfile
@@ -472,7 +473,7 @@ class InterviewFlowTests(unittest.TestCase):
             "needs_teacher_review": False,
         }
         with patch("queme.services.llm._configured", return_value=True), patch(
-            "queme.services.llm._generate", return_value=json.dumps(response)
+            "queme.services.llm._generate", return_value=grounded_json(response)
         ):
             evaluated = evaluate_answer({
                 "transcript": "SQL manages data",
@@ -482,7 +483,7 @@ class InterviewFlowTests(unittest.TestCase):
         self.assertEqual(evaluated["criteria_weights"], {"Correctness": 80.0, "Structure": 20.0})
         self.assertEqual(evaluated["criterion_details"]["Correctness"]["evidence"], "SQL manages data")
         self.assertIsNone(evaluated["criterion_details"]["Structure"]["evidence"])
-        self.assertTrue(evaluated["needs_teacher_review"])
+        self.assertFalse(evaluated["needs_teacher_review"])
 
     def test_improvement_plan_deduplicates_repeated_criterion_areas(self):
         self.first.transcript = "I used a list."

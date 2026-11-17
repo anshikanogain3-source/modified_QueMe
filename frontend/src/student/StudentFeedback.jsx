@@ -347,6 +347,16 @@ export function StudentFeedback({ user }) {
                             </div>
                           )}
 
+                          {q.needs_review && q.evaluation?.review_reason && <p>Teacher review required: {q.evaluation.review_reason.replaceAll("_", " ")}</p>}
+                          {Object.entries(q.evaluation?.provider_results || {}).map(([provider, assessment]) => (
+                            <div className="q-transcript-box" key={provider}>
+                              <strong>{provider}: {assessment.content_score == null ? "Unavailable" : `${Number(assessment.content_score).toFixed(1)}/10`}</strong>
+                              <p>{assessment.model || provider}{assessment.status ? ` ? ${assessment.status.replaceAll("_", " ")}` : ""}</p>
+                              <p>{assessment.feedback}</p>
+                              {assessment.review_reason && <p>Review reason: {assessment.review_reason.replaceAll("_", " ")}</p>}
+                            </div>
+                          ))}
+
                           {/* Evaluation Criteria Details */}
                           {q.evaluation?.criteria_scores && (
                             <div className="criteria-scores-list">

@@ -1,3 +1,4 @@
+from assessment_fixtures import grounded_json
 import io
 import json
 import socket
@@ -125,7 +126,7 @@ class LocalOllamaTests(unittest.TestCase):
             "correct_explanation": "A list can be changed in place.", "strengths": [],
             "weaknesses": [], "feedback": "Good explanation.", "needs_teacher_review": False,
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(answer)) as generate:
+        with patch("queme.services.llm._generate", return_value=grounded_json(answer)) as generate:
             result = evaluate_answer({"transcript": "Lists can be changed in place."})
         self.assertEqual(result["content_score"], 7.5)
         self.assertEqual(result["criteria_scores"], {})
@@ -146,12 +147,12 @@ class LocalOllamaTests(unittest.TestCase):
             "correct_explanation": "A list is mutable.", "strengths": [], "weaknesses": [],
             "feedback": "Good.", "needs_teacher_review": False,
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(answer)) as generate:
+        with patch("queme.services.llm._generate", return_value=grounded_json(answer)) as generate:
             result = evaluate_answer({"transcript": "No matching evidence."})
-        self.assertEqual(generate.call_count, 1)
-        self.assertEqual(result["content_score"], 7.0)
+        self.assertEqual(generate.call_count, 2)
+        self.assertIsNone(result["content_score"])
         self.assertTrue(result["needs_teacher_review"])
-        self.assertEqual(result["review_reason"], "evidence_unavailable")
+        self.assertEqual(result["review_reason"], "invalid_assessment")
 
         del answer["overall_score"]
         self.assertEqual(_evaluation_validation_error(answer, []), "missing_field:overall_score")
@@ -257,7 +258,7 @@ class LocalOllamaTests(unittest.TestCase):
 
         for case_name, response in cases.items():
             with self.subTest(case=case_name), patch(
-                "queme.services.llm._generate", return_value=json.dumps(response)
+                "queme.services.llm._generate", return_value=grounded_json(response)
             ) as generate:
                 result = evaluate_answer({
                     "transcript": "Lists are mutable",
@@ -272,7 +273,7 @@ class LocalOllamaTests(unittest.TestCase):
             self.assertTrue(result["needs_teacher_review"])
             self.assertIn("invalid structured content", result["error"])
 
-    def test_invalid_transcript_evidence_keeps_score_but_requires_teacher_review(self):
+    def test_invalid_transcript_evidence_rejects_score_and_requires_teacher_review(self):
         response = {
             "criteria_scores": {"Correctness": 8},
             "criterion_details": {"Correctness": {
@@ -282,15 +283,15 @@ class LocalOllamaTests(unittest.TestCase):
             "correct_explanation": "Lists can be changed.", "strengths": [], "weaknesses": [],
             "feedback": "Good answer.", "needs_teacher_review": False,
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(response)):
+        with patch("queme.services.llm._generate", return_value=grounded_json(response)):
             result = evaluate_answer({
                 "transcript": "Lists are mutable",
                 "rubric": {"criteria": [{"name": "Correctness", "weight": 100}]},
             })
-        self.assertEqual(result["content_score"], 8.0)
+        self.assertIsNone(result["content_score"])
         self.assertTrue(result["needs_teacher_review"])
-        self.assertEqual(result["review_reason"], "evidence_unavailable")
-        self.assertIsNone(result["criterion_details"]["Correctness"]["evidence"])
+        self.assertEqual(result["review_reason"], "invalid_assessment")
+        self.assertEqual(result["criteria_scores"], {})
 
     def test_ollama_rejecting_structured_output_preserves_teacher_review_fallback(self):
         error_body = io.BytesIO(b'{"error":"JSON schema is unsupported"}')
@@ -324,7 +325,7 @@ class LocalOllamaTests(unittest.TestCase):
             "transcript": "It is a clear answer.",
             "rubric": {"criteria": [{"name": name, "weight": 5} for name in names]},
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(answer)) as generate:
+        with patch("queme.services.llm._generate", return_value=grounded_json(answer)) as generate:
             result = evaluate_answer(payload)
         self.assertEqual(generate.call_args.kwargs["num_predict"], 1800)
         self.assertEqual(set(result["criteria_scores"]), set(names))
@@ -361,7 +362,7 @@ class LocalOllamaTests(unittest.TestCase):
 
     def test_question_generation_accepts_qwen_single_object_json(self):
         response = {"question_text": "How do lists and tuples differ?", "question_type": "technical", "difficulty": "easy", "expected_key_points": ["mutable", "immutable"]}
-        with patch("queme.services.llm._check_model_available"), patch("queme.services.llm._generate", return_value=json.dumps(response)):
+        with patch("queme.services.llm._check_model_available"), patch("queme.services.llm._generate", return_value=grounded_json(response)):
             result = generate_questions("Python", "technical", "easy", count=1)
         self.assertTrue(result["available"])
         self.assertEqual(len(result["questions"]), 1)
@@ -387,7 +388,7 @@ class LocalOllamaTests(unittest.TestCase):
             "strengths": ["Identified mutability"], "weaknesses": ["No example"],
             "feedback": "Add a concrete example.", "needs_teacher_review": False,
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(answer)):
+        with patch("queme.services.llm._generate", return_value=grounded_json(answer)):
             with self.assertLogs("queme.services.llm", level="INFO") as captured:
                 result = evaluate_answer({
                     "transcript": "Lists are mutable",
@@ -405,7 +406,7 @@ class LocalOllamaTests(unittest.TestCase):
             "technical_accuracy": "Correct.", "missing_concepts": [], "correct_explanation": "Lists can be changed.",
             "strengths": [], "weaknesses": [], "feedback": "Good.", "needs_teacher_review": False,
         }
-        with patch("queme.services.llm._generate", return_value=json.dumps(answer)):
+        with patch("queme.services.llm._generate", return_value=grounded_json(answer)):
             result = evaluate_answer({
                 "transcript": "Lists are mutable",
                 "rubric": {"criteria": [{"name": "Correctness", "weight": 100}]},

@@ -1,1 +1,1 @@
-{"pid": 12620, "heartbeat_at": 1794660595.5718174, "state": "idle", "consecutive_failures": 0, "job_id": null, "last_job_id": 19, "last_processed_at": 1794660183.983094, "poll_seconds": 1.0}
+{"pid": 15048, "heartbeat_at": 1794914766.3126035, "state": "idle", "consecutive_failures": 0, "job_id": null, "last_job_id": 21, "last_processed_at": 1794912310.4864907, "poll_seconds": 1.0}

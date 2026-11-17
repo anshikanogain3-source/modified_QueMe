@@ -6,6 +6,7 @@ import math
 from statistics import mean
 from xml.sax.saxutils import escape
 
+from flask import current_app
 from openpyxl import Workbook
 from openpyxl.styles import Alignment
 from reportlab.lib.pagesizes import A4
@@ -18,6 +19,7 @@ from ..extensions import db
 from ..models import InterviewQuestion, Report
 from .audio_analysis import combine_scores
 from .llm import evaluate_answer
+from .assessment import SEQUENTIAL_MODES
 
 AI_DECISION_SUPPORT_DISCLAIMER = (
     "QueMe's AI feedback is decision support for practice and learning. "
@@ -63,7 +65,15 @@ def evaluate_interview_answer(question, *, correlation_id=None):
                 "criteria": criteria,
             },
         }
-        if correlation_id:
+        if current_app.config.get("EVALUATION_MODE", "ollama") in SEQUENTIAL_MODES:
+            def checkpoint(state):
+                question.evaluation_json = state
+                question.content_score = None
+                question.final_ai_score = None
+                db.session.commit()
+            evaluation = evaluate_answer(evaluation_payload, correlation_id=correlation_id,
+                                         previous=question.evaluation_json, checkpoint=checkpoint)
+        elif correlation_id:
             evaluation = evaluate_answer(
                 evaluation_payload,
                 correlation_id=correlation_id,
@@ -261,6 +271,8 @@ def question_analysis_status(question):
     if analysis.audio_usable is not True or analysis.audio_quality_status != "OK":
         return {"status": "INSUFFICIENT_AUDIO", "reason": "The recording did not meet audio quality checks."}
     evaluation = question.evaluation_json if isinstance(question.evaluation_json, dict) else {}
+    if question.needs_review and evaluation.get("review_reason"):
+        return {"status": "NEEDS_REVIEW", "reason": evaluation["review_reason"]}
     if _valid_score(question.content_score) is None:
         reason = evaluation.get("error") or "Content evaluation did not produce a valid score."
         return {"status": "EVALUATION_FAILED", "reason": str(reason)[:300]}
@@ -595,6 +607,10 @@ def build_pdf(interview, questions, report):
         ev = q.evaluation_json or {}
         if ev.get("feedback"):
             story.append(Paragraph(f"AI summary: {escape(str(ev.get('feedback')))}", styles["Normal"]))
+        if ev.get("review_reason"):
+            story.append(Paragraph("Review reason: " + escape(ev["review_reason"]), styles["Normal"]))
+        for provider, assessment in ev.get("provider_results", {}).items():
+            story.append(Paragraph(escape(f"{provider} ({assessment.get('model', provider)}, {assessment.get('status', 'saved assessment')}): {assessment.get('content_score')} /10. {assessment.get('feedback', '')} {assessment.get('review_reason', '')}"), styles["Normal"]))
         criterion_scores = ev.get("criteria_scores", {}) if isinstance(ev, dict) else {}
         criterion_details = ev.get("criterion_details", {}) if isinstance(ev, dict) else {}
         if isinstance(criterion_scores, dict):

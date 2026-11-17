@@ -46,6 +46,13 @@ class ApplicationLoggingTests(unittest.TestCase):
         self.client = self.app.test_client()
 
     def tearDown(self):
+        # Windows cannot remove temporary logs while their handlers are open.
+        for name in ("", "queme.access"):
+            logger = logging.getLogger(name)
+            for handler in list(logger.handlers):
+                if getattr(handler, "_queme_logging_handler", False):
+                    logger.removeHandler(handler)
+                    handler.close()
         self.log_dir.cleanup()
 
     def test_api_access_record_uses_safe_endpoint_and_request_id(self):
