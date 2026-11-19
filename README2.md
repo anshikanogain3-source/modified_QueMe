@@ -178,7 +178,7 @@ The principal SQLAlchemy models are declared in `backend/queme/models.py`:
 - **Report / QuestionReview** — interview summary and teacher review data/overrides.
 - **SystemSetting** — configurable scoring weights.
 
-Schema changes are tracked in `backend/migrations/versions/`. From `backend/` in Windows PowerShell with the virtual environment activated, apply checked-in migrations with `python -m flask --app run.py db upgrade`.
+Schema changes are tracked in `backend/migrations/versions/`. From `backend/` in Windows PowerShell or Linux Bash with the virtual environment activated, apply checked-in migrations with `python -m flask --app run.py db upgrade`.
 
 ## 8. Project structure
 
@@ -233,96 +233,35 @@ Generated directories such as `frontend/node_modules`, `frontend/dist`, Python v
 
 ## 9. Development Setup & Running Commands
 
-The full copy-paste setup, health checks, shutdown instructions, logs, and troubleshooting guide is in [README.md — Development Setup & Running Commands](README.md#development-setup--running-commands). This section is the quick reference.
+QueMe supports Windows and Linux. The full setup, daily startup, health checks, logs, shutdown, and migration instructions for both systems are in [README.md - Development Setup & Running Commands](README.md#development-setup--running-commands).
 
-### Initial setup
+Use 64-bit Python 3.11 (the compatibility workflow covers 3.10-3.12) and Node.js 22. Create a fresh Python environment and install `backend/requirements.txt` on each machine. Activate it with `./.venv/Scripts/Activate.ps1` in Windows PowerShell or `source .venv/bin/activate` in Linux Bash, from `backend/`. Virtual environments and `node_modules` are specific to the operating system.
 
-From the repository root in Windows PowerShell, create the root environment file from the checked-in template if one does not already exist, then set a generated secret:
+Copy `backend/.env.example` to the root `.env` if one does not exist, then set `SECRET_KEY`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD`. Root `.env` takes precedence over `backend/.env`; process environment variables take precedence over both. The default database is `backend/queme.db`, and PostgreSQL is optional through `DATABASE_URL`. Relative storage and log directories resolve from `backend/`. Use destination-specific absolute paths when moving between systems.
 
-```powershell
-if (-not (Test-Path .\.env)) { Copy-Item .\backend\.env.example .\.env }
-py -3 -c "import secrets; print(secrets.token_urlsafe(48))"
-```
+With the backend environment active, these commands work on both platforms:
 
-The default database is SQLite at `backend/queme.db`; PostgreSQL is optional through `DATABASE_URL`. Set `SECRET_KEY`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` in `.env`. The app loads root `.env` first and `backend/.env` only for values not already set.
-
-Install backend requirements and initialize the database once:
-
-```powershell
-Set-Location .\backend
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+```text
 python -m pip install -r requirements.txt
 python -m flask --app run.py db upgrade
 python -m flask --app run.py seed
 ```
 
-Install the Ollama Windows application separately, then pull the configured default model. Ollama listens on port `11434` by default; QueMe defaults to `OLLAMA_MODEL=qwen3:1.7b`:
+Install Ollama separately using its Windows application or [Linux installation instructions](https://docs.ollama.com/linux). Start its server/service, then run `ollama pull qwen3:1.7b` (or your configured model). Transcription uses CPU/int8 on both systems; no CUDA is required for transcription.
 
-```powershell
-ollama pull qwen3:1.7b
-ollama list
-```
+For daily development, run the following in separate terminals:
 
-Install frontend packages once:
+| Component | Directory | Command (backend environment active where applicable) |
+| --- | --- | --- |
+| Answer worker | `backend/` | `python -m flask --app run.py process-answer-jobs` |
+| API | `backend/` | `python -m flask --app run.py --debug run` |
+| Frontend | `frontend/` | `npm run dev` (run `npm ci` once first) |
 
-```powershell
-Set-Location ..\frontend
-npm install
-```
+The API defaults to port 5000. Vite defaults to 5173 and proxies `/api` to the backend. Waitress is included as the shared Windows/Linux WSGI server; see the README for its API startup command. Gunicorn is installed only on non-Windows systems. Run one answer worker per installation, on a single host; its OS lock does not coordinate multiple hosts. Press Ctrl+C to stop foreground processes.
 
-### Daily startup
+Run `python -m unittest discover -s tests -v` from `backend/` and `npm run build` from `frontend/`. The compatibility workflow checks both Windows and Ubuntu, including real process locks and native audio decoding without model downloads. Check live API/worker health at `http://127.0.0.1:5000/api/health`.
 
-Open separate PowerShell terminals from the repository root. Start the answer worker in **Terminal 1**:
-
-```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
-python -m flask --app run.py process-answer-jobs
-```
-
-Start the Flask API in **Terminal 2**:
-
-```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
-python -m flask --app run.py --debug run
-```
-
-The answer worker runs continuously and polls the durable queue; do not start a second worker while one is already running. The API normally uses port `5000`.
-
-**Terminal 3 — Frontend:**
-
-```powershell
-Set-Location .\frontend
-npm run dev
-```
-
-Vite normally uses port `5173` and proxies `/api` to the backend.
-
-### Manual worker and verification
-
-When the API is started independently, run the worker in another backend terminal:
-
-```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
-python -m flask --app run.py process-answer-jobs
-```
-
-Use `python -m flask --app run.py process-answer-jobs --once` to process at most one available job and exit. Do not start a second worker.
-
-Check the API and worker status at `http://127.0.0.1:5000/api/health` or with:
-
-```powershell
-Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/health'
-```
-
-Press Ctrl+C in each terminal to stop its process. Stop the frontend in its terminal; manage Ollama using its Windows application/service controls.
-
-The active local environment is configured for the `queme-audio` bucket in `ap-southeast-2` (Asia Pacific, Sydney). Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` before uploading recordings. For S3-compatible services, set `S3_ENDPOINT_URL`. The requested label `QueMe Audio` is represented as lowercase `queme-audio`; AWS bucket names cannot contain spaces or uppercase letters, and the global name must be available. See [AWS S3 bucket naming rules](https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucketnamingrules.html).
-
-Microphone access requires a supported browser and a secure context (localhost is accepted by browsers). Speech playback depends on browser speech-synthesis support. Local AI features require Ollama and the configured model; transcription, email, S3, and R2 behavior depends on runtime configuration and service availability.
+Microphone access requires a supported browser and a secure context (localhost is accepted). Available speech-synthesis voices vary by system/browser. Local AI requires Ollama and the configured model; transcription, email, S3, and R2 depend on runtime configuration and service availability. Local storage is the default; configure private object storage explicitly if desired.
 
 ## 10. Current implementation boundaries
 

@@ -4,204 +4,205 @@ QueMe is a campus virtual interview assistant. The backend is a Flask REST API. 
 
 ## Development Setup & Running Commands
 
-These instructions use Windows PowerShell and the current project defaults. For the implementation overview, see [README2.md](README2.md).
+QueMe runs on **Windows and Linux**. Use 64-bit Python **3.11** for the simplest setup; the compatibility workflow covers Python 3.10, 3.11, and 3.12 on both systems. Use Node.js 22 LTS and npm for the frontend. The current pinned NumPy/audio stack is intended for Python 3.10-3.12; use one of those versions rather than Python 3.13+.
+
+The backend uses portable `pathlib` paths, CPU/int8 transcription, and native OS locks (`msvcrt` on Windows, `fcntl` on Linux). You do not need CUDA to run transcription. Install dependencies separately on each operating system; virtual environments and `node_modules` cannot be copied between Windows and Linux. The frontend uses browser APIs on both platforms. For the implementation overview, see [README2.md](README2.md).
 
 ### A. Initial setup
 
-1. Open an existing checkout, or clone the repository using your repository URL. The commands below assume it is at `$HOME\Documents\QueMe`:
+Start in your cloned repository's root directory. Choose the commands for your shell.
 
-   ```powershell
-   Set-Location "$HOME\Documents\QueMe"
-   ```
+**Windows PowerShell - create configuration and the backend environment:**
 
-2. Create the root `.env` from the template if you do not already have one. Generate a secret and put it in `.env` as `SECRET_KEY`:
+```powershell
+if (-not (Test-Path ./.env)) { Copy-Item ./backend/.env.example ./.env }
+py -3.11 -c "import secrets; print(secrets.token_urlsafe(48))"
+cd backend
+py -3.11 -m venv .venv
+./.venv/Scripts/Activate.ps1
+python -m pip install -r requirements.txt
+```
 
-   ```powershell
-   if (-not (Test-Path .\.env)) { Copy-Item .\backend\.env.example .\.env }
-   py -3 -c "import secrets; print(secrets.token_urlsafe(48))"
-   ```
+If PowerShell blocks activation, use `./.venv/Scripts/python.exe` in place of `python` for backend commands; activation is optional.
 
-   The application loads the repository root `.env` first, then `backend/.env` as a fallback for unset values. If both files define the same variable, the root `.env` takes precedence. The template omits `DATABASE_URL`, so the default is `backend/queme.db` (SQLite). To use PostgreSQL, set `DATABASE_URL` to a reachable PostgreSQL database URL.
+**Linux Bash - create configuration and the backend environment:**
 
-   The default Ollama settings are `OLLAMA_BASE_URL=http://localhost:11434` and `OLLAMA_MODEL=qwen3:1.7b`. Set either in `.env` only if your server or model differs. Keep `ADMIN_EMAIL` and `ADMIN_PASSWORD` private; the initial admin password must be at least 12 characters.
+Install Python 3.11 with its `venv` support, Node.js 22, npm, and curl using your distribution's packages or the official installers. On Ubuntu/Debian the virtual-environment package is `python3.11-venv` when using Python 3.11; the distribution's default Python 3.10-3.12 can also be used with its matching venv package. Replace `python3.11` below with that interpreter if needed.
 
-3. Create and install the backend environment. Python 3.10 or newer is required:
+```bash
+[ -f .env ] || cp backend/.env.example .env
+python3.11 -c "import secrets; print(secrets.token_urlsafe(48))"
+cd backend
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
 
-   ```powershell
-   Set-Location .\backend
-   py -3 -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   python -m pip install -r requirements.txt
-   ```
+Activate the environment in every backend terminal. On Linux, `.venv/bin/python` also works without activation. PyAV wheels bundle FFmpeg for audio decoding; no separate FFmpeg installation is needed for the standard wheel-based setup. See the [faster-whisper requirements](https://github.com/SYSTRAN/faster-whisper#requirements).
 
-   Activate the virtual environment in each backend PowerShell terminal before running backend commands.
+**Configuration - both platforms:**
 
-4. Install the Ollama Windows application if it is not already installed. Start Ollama if it is not already running, then pull and list the configured default model:
+Edit the root `.env` and set `SECRET_KEY` to the generated secret, plus `ADMIN_EMAIL` and `ADMIN_PASSWORD` (at least 12 characters). Keep these private. Root `.env` is loaded first, then `backend/.env` supplies any unset values; existing process environment variables take precedence.
 
-   ```powershell
-   ollama pull qwen3:1.7b
-   ollama list
-   ```
+With no `DATABASE_URL`, the database is `backend/queme.db`. PostgreSQL is optional. Relative `STORAGE_LOCAL_DIR` and `LOG_DIR` values resolve from `backend/`, regardless of your terminal's current directory. Prefer portable relative paths such as `uploads` and `logs`. For absolute paths, use the current machine's path, for example `/srv/queme/uploads` on Linux or `C:/QueMe/uploads` on Windows. Do not reuse Windows drive-letter paths on Linux.
 
-   Verify the model using the same local chat API and `think:false` setting QueMe sends:
+**Ollama - install separately on each machine:**
 
-   ```powershell
-   $body = @{
-     model = 'qwen3:1.7b'
-     messages = @(@{ role = 'user'; content = 'Reply with READY only.' })
-     think = $false
-     stream = $false
-     options = @{ num_predict = 32 }
-   } | ConvertTo-Json -Depth 5
-   Invoke-RestMethod -Uri 'http://localhost:11434/api/chat' -Method Post -ContentType 'application/json' -Body $body
-   ```
+- Windows: install and start the [Ollama Windows application](https://ollama.com/download/windows).
+- Linux: follow the [official Linux installation guide](https://docs.ollama.com/linux). Start the installed service with `sudo systemctl start ollama`, or run `ollama serve` in a separate terminal if you are not using a service. Start only one Ollama server.
 
-   A successful response has a `message.content` value of `READY`. If you configured another `OLLAMA_MODEL`, pull and test that exact model tag instead. Ollama is a separate local service; the default Ollama address is `http://localhost:11434`.
+With Ollama running, these commands work in both shells:
 
-5. Apply the checked-in database migrations and seed initial data from `backend/`:
+```text
+ollama pull qwen3:1.7b
+ollama list
+```
 
-   ```powershell
-   python -m flask --app run.py db upgrade
-   python -m flask --app run.py seed
-   ```
+The defaults are `OLLAMA_BASE_URL=http://localhost:11434` and `OLLAMA_MODEL=qwen3:1.7b`. If overridden, pull that exact model tag. The Whisper model may download on its first transcription.
 
-   These commands update the configured database schema and create baseline data. Run `seed` for initial setup; it does not reset an existing admin password. Migrations are tracked in `backend/migrations/versions/`; do not run `db init`.
+**Initialize the database - both platforms, from `backend/` with the environment active:**
 
-6. Install frontend dependencies once:
+```text
+python -m flask --app run.py db upgrade
+python -m flask --app run.py seed
+```
 
-   ```powershell
-   Set-Location ..\frontend
-   npm install
-   ```
+Migrations are checked in under `backend/migrations/versions/`; do not run `db init`. Seed creates baseline data and does not reset an existing admin password.
+
+**Install frontend dependencies - both platforms, from `backend/`:**
+
+```text
+cd ../frontend
+npm ci
+```
 
 ### B. Daily startup
 
-Use separate terminals. Start Ollama if it is not already running, then start the answer worker and Flask API separately, followed by Vite.
+Start Ollama, then use three separate terminals opened at the repository root.
 
-**Terminal 1 — Answer worker:** From the repository root:
+**Terminal 1 - Answer worker:**
+
+Windows PowerShell:
 
 ```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
+cd backend
+./.venv/Scripts/Activate.ps1
 python -m flask --app run.py process-answer-jobs
 ```
 
-The worker polls the durable answer queue and runs continuously. Do not start a second worker while one is already running.
+Linux Bash:
 
-**Terminal 2 — Flask API:** From the repository root:
+```bash
+cd backend
+source .venv/bin/activate
+python -m flask --app run.py process-answer-jobs
+```
+
+The worker continuously polls the durable queue. Run only one worker per installation; an OS lock rejects duplicate workers. `--once` processes at most one available job and exits, and can change real queued answers.
+
+**Terminal 2 - Flask API:**
+
+Windows PowerShell:
 
 ```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
+cd backend
+./.venv/Scripts/Activate.ps1
 python -m flask --app run.py --debug run
 ```
 
-The API normally serves `http://127.0.0.1:5000`.
+Linux Bash:
 
-**Terminal 3 — Frontend:**
+```bash
+cd backend
+source .venv/bin/activate
+python -m flask --app run.py --debug run
+```
 
-```powershell
-Set-Location .\frontend
+The development API serves `http://127.0.0.1:5000`.
+
+**Terminal 3 - Frontend, both platforms:**
+
+```text
+cd frontend
 npm run dev
 ```
 
-Vite normally serves `http://127.0.0.1:5173` and proxies `/api` requests to Flask on port 5000. If that port is busy, Vite may select another port; use the address printed in its terminal.
+Open `http://127.0.0.1:5173` (or the URL Vite prints if the port is busy). Vite proxies `/api` to Flask on port 5000. Allow microphone access; speech synthesis voices depend on the operating system and browser. A remotely hosted interview room requires HTTPS for microphone access.
 
-### C. Manual worker commands
+### C. Run the API without Flask's development server
 
-Run the worker in its own terminal, separately from the API:
+[Waitress](https://docs.pylonsproject.org/projects/waitress/en/stable/) is installed on both platforms. From `backend/`, with the virtual environment active, replace the Flask API command with:
 
-```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
-python -m flask --app run.py process-answer-jobs
+```text
+python -m waitress --listen=127.0.0.1:5000 --max-request-body-size=33554432 run:app
 ```
 
-The worker runs continuously. To process at most one available job and exit, add `--once`:
-
-```powershell
-python -m flask --app run.py process-answer-jobs --once
-```
-
-Do not start a second worker; the existing worker lock rejects duplicate workers. `--once` is an operating command: it may claim and process a real queued answer.
+Keep the answer worker running separately. This serves the backend API; the frontend still needs Vite during development or separate static hosting for `frontend/dist` after `npm run build`. Gunicorn remains available on Linux and is skipped when installing on Windows. Use a reverse proxy and HTTPS when deploying for remote browser access.
 
 ### D. Health and verification
 
-These commands are read-only diagnostics unless noted otherwise.
-
-**Check the backend and worker:**
+**Windows PowerShell - inspect health, models, processes, ports, and logs from the root:**
 
 ```powershell
 Invoke-RestMethod -Uri 'http://127.0.0.1:5000/api/health'
-```
-
-The response includes database status and a `worker` object. `healthy` means the worker is processing; `inactive` means it is running and idle; `failing` means repeated database failures; `unhealthy` means it is starting, retrying, or has a stale heartbeat; `not_running` means no worker holds the host lock. The response also includes heartbeat age, consecutive failures, and the last processed job ID/time.
-
-**Check Ollama and the installed models:**
-
-```powershell
-ollama list
 Invoke-RestMethod -Uri 'http://localhost:11434/api/tags'
-```
-
-Use the chat smoke test in Initial setup to verify an actual model response. `ollama list` and `/api/tags` verify availability and installed tags, but do not run an inference.
-
-**Inspect running processes and listening ports:**
-
-```powershell
 Get-CimInstance Win32_Process |
-  Where-Object { $_.CommandLine -match 'flask|vite|ollama' } |
+  Where-Object { $_.CommandLine -match 'flask|waitress|vite|ollama' } |
   Select-Object ProcessId, Name, CommandLine
 Get-NetTCPConnection -State Listen |
   Where-Object { $_.LocalPort -in 5000, 5173, 11434 } |
   Select-Object LocalAddress, LocalPort, OwningProcess
+Get-Content ./backend/logs/queme.log -Tail 100
+Get-Content ./backend/logs/queme.log -Wait
 ```
 
-**Inspect backend logs** (defaults to `backend/logs`; `LOG_DIR` can override it):
+**Linux Bash - equivalent diagnostics from the root:**
 
-```powershell
-Get-Content .\backend\logs\queme.log -Tail 100
-Get-Content .\backend\logs\queme.log -Wait
-Select-String -Path .\backend\logs\queme.log -Pattern 'worker|answer|ollama|error'
+```bash
+curl -fsS http://127.0.0.1:5000/api/health
+curl -fsS http://localhost:11434/api/tags
+ps -ef | grep -E 'flask|waitress|vite|ollama'
+ss -ltnp
+tail -n 100 backend/logs/queme.log
+tail -f backend/logs/queme.log
 ```
 
-**Run verification commands:**
+The health response includes database status and worker state: `healthy` means processing, `inactive` means running and idle, `failing` means repeated database failures, `unhealthy` means starting/retrying/stale heartbeat, and `not_running` means no worker holds the host lock. Heartbeat age, failure count, and last job ID/time are also included. `ollama list` and `/api/tags` check availability, not inference. To test an actual model response in either shell:
 
-```powershell
-Set-Location .\backend
-.\.venv\Scripts\Activate.ps1
+```text
+ollama run qwen3:1.7b "Reply with READY only."
+```
+
+**Automated verification - either platform, active backend environment:**
+
+```text
+cd backend
 python -m unittest discover -s tests -v
 ```
 
-To verify the frontend production build:
+Run from the root in another terminal to check the frontend:
 
-```powershell
-Set-Location .\frontend
+```text
+cd frontend
 npm run build
 ```
 
-The backend tests use temporary/in-memory test databases and mock external inference; they do not process your live interview queue. `npm run build` writes generated frontend output under `frontend/dist`.
+Tests use isolated databases/storage and mock external inference. Native audio imports/decoding and cross-process file locks are checked without downloading models. `.github/workflows/compatibility.yml` runs installation, backend tests, database migrations/seed, and a frontend build on Windows and Ubuntu. CI does not perform live Ollama inference. The frontend build writes `frontend/dist`.
 
 ### E. Shutdown
 
-- In the answer-worker terminal and the API terminal, press **Ctrl+C** to stop each process.
-- In the frontend terminal, press **Ctrl+C** to stop Vite.
-- Leave Ollama running or stop it using its Windows application/service controls.
-- Check for remaining processes with the PowerShell process command above. If a process remains, identify its PID and stop only that process with `Stop-Process -Id <PID>` after confirming it is safe to stop.
+Press **Ctrl+C** in each worker, API, and frontend terminal. For Ollama, use Windows application controls, Ctrl+C for a foreground Linux server, or `sudo systemctl stop ollama` for the Linux service. Inspect processes before stopping a remaining PID; use `Stop-Process -Id <PID>` on Windows or `kill <PID>` on Linux.
 
-### F. Troubleshooting
+### F. Troubleshooting and moving between platforms
 
-1. **Worker is not running:** Check `/api/health`. Start the worker with the PowerShell command in section C. If startup reports that a worker is already running, inspect processes first; do not delete `backend/instance/answer-processing-worker.lock`. The file can remain after shutdown—the OS lock, not file existence, indicates a running worker.
-2. **Answers remain `QUEUED` or `PROCESSING`:** Check the `worker` status from `/api/health`, then inspect `backend/logs/queme.log` and `backend/logs/errors.log`. Confirm the worker process is present and that database status is `ok`. A fresh `inactive` worker is polling an empty queue; persistent queued jobs with that status warrant checking the worker logs and database connectivity. On restart, the worker's recovery code resumes interrupted jobs from their recorded stage.
-3. **Heartbeat is stale or worker is `unhealthy`:** Check the process list and logs. A worker may be doing a long transcription or model request; inspect recent activity before stopping it. If it is no longer making progress, stop it gracefully and restart it using the PowerShell command in section C. The status endpoint uses the lock and heartbeat together; an old heartbeat alone does not mean a worker is running.
-4. **Ollama is unavailable:** Run `ollama list` and `Invoke-RestMethod -Uri 'http://localhost:11434/api/tags'`. If the server is down, start the Ollama Windows application. Check `OLLAMA_BASE_URL` in the active `.env` if Ollama uses a different address.
-5. **Configured model is not installed:** The default is `qwen3:1.7b`. Run `ollama pull qwen3:1.7b`, then confirm it appears in `ollama list`. If `OLLAMA_MODEL` is overridden, pull that exact configured tag instead.
-6. **Database connection errors:** Check `/api/health` and `DATABASE_URL` in the active `.env`. With no `DATABASE_URL`, QueMe uses SQLite at `backend/queme.db`; with PostgreSQL, confirm the server, database name, credentials, and network access. From `backend/` with the virtual environment activated, `python -m flask --app run.py db upgrade` applies schema migrations and changes the database schema; use the configured database deliberately. Do not delete the database to fix a connection error.
-7. **Port already in use:** Use `Get-NetTCPConnection -State Listen` above to identify the owning PID and service. Stop only the process you intend to stop using Ctrl+C or `Stop-Process -Id <PID>`. Flask defaults to port 5000, Vite to 5173, and Ollama to 11434. Vite may choose a different free port and prints the actual URL.
-8. **Backend starts but worker fails:** Read the terminal output and `backend/logs/errors.log`. Check that `.venv` exists, migrations have been applied to the same database used by the API, and no other worker holds the lock. Migrations are not run automatically at startup.
-9. **Worker unexpectedly exits:** Inspect the process list and latest worker/database log entries. Temporary SQLAlchemy database errors use bounded retry backoff while the worker process remains alive. If the worker process died, restart it; the startup recovery requeues interrupted jobs and preserves completed evaluations. Keep the database and answer files intact during recovery.
+- **Worker missing or stuck:** Check `/api/health`, the process list, and `backend/logs/queme.log` / `errors.log`. Start or gracefully restart the worker with the commands above. Do not delete the worker lock file: it can remain after shutdown, and only the OS lock indicates a running worker. Recovery resumes interrupted jobs from their saved stage.
+- **Ollama unavailable/model missing:** Check `/api/tags`, start Ollama, and pull the configured model. A long transcription or inference can make the heartbeat stale; inspect activity before restarting.
+- **Database errors:** Verify `DATABASE_URL`, keep existing database files intact, and apply migrations to the same database used by the API. Migrations do not run automatically.
+- **Ports busy:** Inspect ports using the commands above, then stop only the intended process. Defaults are API 5000, Vite 5173, and Ollama 11434.
+- **Linux install errors:** Use a supported 64-bit Python 3.10-3.12 and a fresh virtual environment. Install the matching venv package if creation fails. If your distribution cannot use the SoundFile wheel, install its system `libsndfile` package (for example `libsndfile1` on Debian/Ubuntu). Minimal containers or other CPU architectures may require additional native libraries or builds.
+- **Moving an existing installation:** Stop the API and worker before copying data. Recreate `.venv` and run `npm ci` on the destination. Transfer the configured database and local uploads together, or reconnect to the same PostgreSQL/object storage services. Update machine-specific paths and credentials in `.env`. Keep upload directory names and storage keys unchanged; Linux paths are case-sensitive. Host lock/heartbeat files and logs are runtime artifacts, not migration data. Never run workers on two hosts against the same queue: the lock is local to a host.
 
-**Diagnostic vs state-changing commands:** `Invoke-RestMethod`, `ollama list`, `/api/tags`, `Get-CimInstance`, `Get-NetTCPConnection`, `Get-Content`, and `Select-String` only inspect state. `ollama pull` downloads a model; `npm install` installs dependencies; `db upgrade` changes the database schema; `seed` may add initial records; and starting the worker can update queued answer jobs. None of the documented troubleshooting steps deletes interview data.
+Health checks, model listing, process/port inspection, and log reads only inspect state. Dependency installation, model pulls, migrations, seeding, and running the answer worker change state.
 
 ## Backend configuration reference
 
@@ -289,8 +290,7 @@ processes after configuration changes. This mode sends question, transcript, rub
 reference guidance as text to OpenAI using Responses Structured Outputs with `store=False`;
 recordings and delivery metrics are not sent. No Gemini provider is used.
 
-From the repository root install dependencies with:
-`backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt`.
+From `backend/` with the platform-specific virtual environment activated, install dependencies with `python -m pip install -r requirements.txt`.
 
 Both providers must pass the same concept/evidence validation. Agreement means the same
 accuracy category and a score difference strictly below 2 points; the Ollama score is then
@@ -334,31 +334,13 @@ Reports, student feedback, PDF and Excel expose the saved outcomes without re-ev
 historical interviews. Daily token/request quota exhaustion goes directly to teacher review;
 transient rate limits and connection errors use bounded worker retries. No migration is required.
 
-From the repository root, install the existing dependencies if needed:
+From `backend/` with the platform-specific virtual environment activated:
 
-```powershell
-backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+```text
+python -m pip install -r requirements.txt
 ```
 
-After changing configuration, press **Ctrl+C** in the existing worker and API terminals.
-Start each again in a separate terminal; do not run a second worker alongside the first:
-
-```powershell
-Set-Location C:\Users\2525201\Desktop\QueMe\backend
-.\.venv\Scripts\python.exe -m flask --app run.py process-answer-jobs
-```
-
-```powershell
-Set-Location C:\Users\2525201\Desktop\QueMe\backend
-.\.venv\Scripts\python.exe -m flask --app run.py --debug run
-```
-
-For the frontend, if it is not already running:
-
-```powershell
-Set-Location C:\Users\2525201\Desktop\QueMe\frontend
-npm run dev
-```
+After changing configuration, press **Ctrl+C** in the existing worker and API terminals, then restart each using [Daily startup](#b-daily-startup). Those instructions cover Windows PowerShell and Linux Bash. Keep only one answer worker running. Start the frontend with `npm run dev` from `frontend/` if needed.
 
 These startup commands process real queued answers. Automated verification uses mocked
 providers and isolated databases/storage; a live smoke test is a separate step.

@@ -13,5 +13,7 @@ numpy==1.26.4
 reportlab
 openpyxl==3.1.5
 boto3==1.35.36
-gunicorn==23.0.0
+# Gunicorn uses Unix APIs; Waitress is the shared Windows/Linux server.
+gunicorn==23.0.0; sys_platform != "win32"
+waitress==3.0.2
 openai==2.54.0
